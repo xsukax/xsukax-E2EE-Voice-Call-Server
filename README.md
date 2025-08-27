@@ -66,12 +66,12 @@ curl -O https://raw.githubusercontent.com/xsukax/xsukax-E2EE-Voice-Call-Server/r
 
 2. **Make the script executable**:
 ```bash
-chmod +x install.sh
+chmod +x xsukax-E2EE-Voice-Call-Server.sh
 ```
 
 3. **Run as root**:
 ```bash
-sudo ./install.sh
+sudo ./xsukax-E2EE-Voice-Call-Server.sh
 ```
 
 ### Manual Installation
