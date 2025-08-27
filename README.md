@@ -61,7 +61,7 @@ This server implements a multi-layered security architecture that ensures:
 
 1. **Download the installation script**:
 ```bash
-curl -O https://raw.githubusercontent.com/your-repo/voice-server/main/install.sh
+curl -O https://raw.githubusercontent.com/xsukax/xsukax-E2EE-Voice-Call-Server/refs/heads/main/xsukax-E2EE-Voice-Call-Server.sh
 ```
 
 2. **Make the script executable**:
