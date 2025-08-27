@@ -160,7 +160,7 @@ sudo systemctl start voice-server
 ## 🏷️ Group Management
 
 ### Creating Groups
-Groups are created automatically via URL访问:
+Groups are created automatically via URL:
 - `https://voice.example.com/work` → Creates "work" group
 - `https://voice.example.com/family` → Creates "family" group
 - `https://voice.example.com/friends` → Creates "friends" group
