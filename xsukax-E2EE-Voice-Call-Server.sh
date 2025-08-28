@@ -2,43 +2,52 @@
 
 set -euo pipefail
 
+# Configuration
 INSTALL_DIR="/opt/voice-server"
 SERVICE_USER="voiceserver"
 PORT=22000
 
+# Logging function
 log() { echo "[$(date +'%H:%M:%S')] $1"; }
-error() { echo "❌ $1"; exit 1; }
+error() { echo "⚠ $1"; exit 1; }
 
+# Check root access
 [[ $EUID -eq 0 ]] || error "Run as root"
 
 log "🚀 Installing xsukax E2E Encrypted Voice Call Server"
 
-# Clean install
+# Clean previous installation
 systemctl stop voice-server 2>/dev/null || true
 rm -rf "$INSTALL_DIR"
 userdel "$SERVICE_USER" 2>/dev/null || true
 
-# Install packages (including OpenSSL for certificate generation)
+# Install system packages
+log "Installing system packages..."
 if command -v apt >/dev/null; then
-    apt update -qq && apt install -y python3 python3-pip python3-venv curl ufw openssl
+    apt update -qq
+    apt install -y python3 python3-pip python3-venv curl ufw openssl
 else
-    yum update -y -q && yum install -y python3 python3-pip curl firewalld openssl
+    yum update -y -q
+    yum install -y python3 python3-pip curl firewalld openssl
 fi
 
-# Setup
+# Setup system user and directories
+log "Setting up system user and directories..."
 useradd -r -s /bin/false -d "$INSTALL_DIR" "$SERVICE_USER"
 mkdir -p "$INSTALL_DIR"/app
 cd "$INSTALL_DIR"
 
-# Python environment
+# Setup Python environment
+log "Setting up Python environment..."
 python3 -m venv venv
 source venv/bin/activate
 pip install -q Flask==3.0.0 Flask-SocketIO==5.3.6 eventlet==0.33.3
 
-# Create server with FIXED GROUPS and SCREEN-WAKE-ON-CALL
+# Create main server application
+log "Creating server application..."
 cat > app/server.py << 'EOF'
 #!/usr/bin/env python3
-import os,secrets,string,logging,re
+import os,secrets,string,logging,re,random
 from flask import Flask,render_template_string,request,jsonify,session,redirect
 from flask_socketio import SocketIO,emit,join_room,leave_room
 
@@ -49,18 +58,23 @@ app=Flask(__name__)
 app.secret_key=secrets.token_hex(32)
 socketio=SocketIO(app,cors_allowed_origins="*",async_mode='eventlet',logger=False)
 
-# Group-based user management
-groups = {}  # group_name: {users: {user_id: {sid, status}}, calls: {call_id: {caller, callee}}}
+# Configuration
+PORT = 22000
+
+# Group management
+groups = {}
 active_groups = set()
 
 def gen_id():
     return ''.join(secrets.choice(string.ascii_uppercase+string.digits) for _ in range(6))
 
+def gen_random_group():
+    return f"group{random.randint(1000, 9999)}"
+
 def get_or_create_group(group_name):
     if not group_name or group_name.strip() == '':
         return None
     
-    # Sanitize group name
     group_name = re.sub(r'[^a-zA-Z0-9_-]', '', group_name.lower())[:20]
     if not group_name or len(group_name) < 1:
         return None
@@ -72,7 +86,7 @@ def get_or_create_group(group_name):
     
     return group_name
 
-# Enhanced HTML with FIXED GROUPS and STRONGER SCREEN WAKE
+# Modern flat HTML template
 HTML='''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +95,6 @@ HTML='''<!DOCTYPE html>
     <title>🔒 xsukax E2E Encrypted Voice Call{% if group_name %} - {{ group_name.title() }}{% endif %}</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.js"></script>
     <style>
-        /* Reset and Base Styles */
         * {
             margin: 0;
             padding: 0;
@@ -101,11 +114,8 @@ HTML='''<!DOCTYPE html>
             --text-primary: #f0f6fc;
             --text-secondary: #8b949e;
             --border-color: #30363d;
-            --shadow: rgba(0, 0, 0, 0.3);
-            --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Consolas', 'Courier New', monospace;
-            --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
-            --radius: 8px;
-            --spacing: 1rem;
+            --font-mono: 'SF Mono', 'Monaco', 'Roboto Mono', monospace;
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
 
         body {
@@ -113,17 +123,15 @@ HTML='''<!DOCTYPE html>
             background: var(--light-bg);
             color: var(--text-primary);
             line-height: 1.6;
-            overflow-x: hidden;
             font-size: 16px;
         }
 
-        /* Header */
         .header {
             background: var(--primary-color);
             color: white;
-            padding: var(--spacing);
+            padding: 1.5rem;
             text-align: center;
-            border-bottom: 2px solid var(--secondary-color);
+            border-bottom: 1px solid var(--secondary-color);
         }
 
         .header h1 {
@@ -135,47 +143,42 @@ HTML='''<!DOCTYPE html>
 
         .group-badge {
             display: inline-block;
-            background: rgba(74, 158, 255, 0.2);
-            color: var(--accent-color);
+            background: var(--accent-color);
+            color: white;
             padding: 0.25rem 0.75rem;
-            border-radius: calc(var(--radius) * 2);
+            border-radius: 4px;
             font-size: 0.75rem;
             font-family: var(--font-mono);
             margin-left: 0.5rem;
-            border: 1px solid var(--accent-color);
         }
 
         .encryption-badge {
             display: inline-block;
-            background: rgba(255, 255, 255, 0.15);
+            background: var(--text-secondary);
+            color: white;
             padding: 0.25rem 0.75rem;
-            border-radius: calc(var(--radius) * 2);
+            border-radius: 4px;
             font-size: 0.75rem;
             font-family: var(--font-mono);
             margin-left: 0.5rem;
-            border: 1px solid rgba(255, 255, 255, 0.2);
         }
 
-        /* Layout */
         .container {
             max-width: 600px;
             margin: 0 auto;
-            padding: var(--spacing);
+            padding: 1rem;
         }
 
-        /* Cards */
         .card {
             background: var(--card-bg);
-            border-radius: var(--radius);
-            box-shadow: 0 2px 10px var(--shadow);
-            margin: var(--spacing) 0;
-            overflow: hidden;
+            border-radius: 6px;
+            margin: 1rem 0;
             border: 1px solid var(--border-color);
         }
 
         .card-header {
             background: var(--secondary-color);
-            padding: var(--spacing);
+            padding: 1rem;
             border-bottom: 1px solid var(--border-color);
             font-weight: 600;
             font-family: var(--font-mono);
@@ -186,17 +189,16 @@ HTML='''<!DOCTYPE html>
         }
 
         .card-body {
-            padding: var(--spacing);
+            padding: 1rem;
         }
 
-        /* ID Display */
         .my-id {
             background: var(--secondary-color);
-            padding: calc(var(--spacing) * 1.5);
-            border-radius: var(--radius);
+            padding: 1.5rem;
+            border-radius: 6px;
             text-align: center;
-            margin: var(--spacing) 0;
-            border: 2px dashed var(--accent-color);
+            margin: 1rem 0;
+            border: 2px solid var(--accent-color);
         }
 
         .id-big {
@@ -209,27 +211,20 @@ HTML='''<!DOCTYPE html>
             word-break: break-all;
         }
 
-        /* Group Info */
         .group-info {
             background: var(--secondary-color);
-            padding: calc(var(--spacing) * 1.5);
-            border-radius: var(--radius);
+            padding: 1.5rem;
+            border-radius: 6px;
             text-align: center;
-            margin: var(--spacing) 0;
-            border: 2px dashed var(--success-color);
-            transition: all 0.2s ease;
+            margin: 1rem 0;
+            border: 2px solid var(--success-color);
             cursor: pointer;
             user-select: none;
+            transition: background-color 0.2s ease;
         }
 
         .group-info:hover {
             background: #373e47;
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 208, 132, 0.3);
-        }
-
-        .group-info:active {
-            transform: translateY(-1px);
         }
 
         .group-name {
@@ -248,32 +243,25 @@ HTML='''<!DOCTYPE html>
             margin-bottom: 0.5rem;
         }
 
-        /* Buttons */
         .btn {
             background: var(--accent-color);
             color: white;
             border: none;
             padding: 0.75rem 1rem;
-            border-radius: var(--radius);
+            border-radius: 4px;
             cursor: pointer;
             font-size: 0.9rem;
             font-weight: 600;
             font-family: var(--font-mono);
-            transition: all 0.2s ease;
+            transition: background-color 0.2s ease;
             width: 100%;
             margin: 0.25rem 0;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            border: 1px solid transparent;
         }
 
         .btn:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(74, 158, 255, 0.4);
-        }
-
-        .btn:active {
-            transform: translateY(0);
+            background: #3a8ee6;
         }
 
         .btn-green {
@@ -281,7 +269,7 @@ HTML='''<!DOCTYPE html>
         }
 
         .btn-green:hover {
-            box-shadow: 0 4px 12px rgba(0, 208, 132, 0.4);
+            background: #00b574;
         }
 
         .btn-red {
@@ -289,7 +277,7 @@ HTML='''<!DOCTYPE html>
         }
 
         .btn-red:hover {
-            box-shadow: 0 4px 12px rgba(255, 71, 87, 0.4);
+            background: #e03e52;
         }
 
         .btn-small {
@@ -299,7 +287,6 @@ HTML='''<!DOCTYPE html>
             margin: 0;
         }
 
-        /* Status Indicators */
         .status {
             position: fixed;
             top: 20px;
@@ -307,12 +294,11 @@ HTML='''<!DOCTYPE html>
             background: var(--primary-color);
             color: white;
             padding: 0.5rem 1rem;
-            border-radius: calc(var(--radius) * 3);
+            border-radius: 4px;
             z-index: 1000;
             font-weight: 600;
             font-family: var(--font-mono);
             font-size: 0.8rem;
-            box-shadow: 0 2px 10px var(--shadow);
             border: 1px solid var(--secondary-color);
         }
 
@@ -323,14 +309,12 @@ HTML='''<!DOCTYPE html>
             background: var(--success-color);
             color: white;
             padding: 0.4rem 0.8rem;
-            border-radius: calc(var(--radius) * 2);
+            border-radius: 4px;
             font-size: 0.75rem;
             font-family: var(--font-mono);
             z-index: 1000;
-            box-shadow: 0 2px 10px var(--shadow);
         }
 
-        /* User List */
         .user {
             display: flex;
             justify-content: space-between;
@@ -338,15 +322,13 @@ HTML='''<!DOCTYPE html>
             padding: 0.75rem;
             margin: 0.5rem 0;
             background: var(--secondary-color);
-            border-radius: var(--radius);
+            border-radius: 4px;
             border-left: 3px solid var(--success-color);
-            transition: all 0.2s;
+            transition: background-color 0.2s;
         }
 
         .user:hover {
             background: #373e47;
-            transform: translateX(2px);
-            box-shadow: 0 2px 8px var(--shadow);
         }
 
         .user-info {
@@ -361,10 +343,8 @@ HTML='''<!DOCTYPE html>
             border-radius: 50%;
             background: var(--success-color);
             margin-right: 0.75rem;
-            box-shadow: 0 0 6px rgba(0, 208, 132, 0.5);
         }
 
-        /* Call Modal */
         .modal {
             display: none;
             position: fixed;
@@ -374,7 +354,6 @@ HTML='''<!DOCTYPE html>
             height: 100%;
             background: rgba(13, 17, 23, 0.95);
             z-index: 3000;
-            animation: fadeIn 0.3s ease-out;
         }
 
         .modal.show {
@@ -385,13 +364,11 @@ HTML='''<!DOCTYPE html>
 
         .modal-content {
             background: var(--card-bg);
-            border-radius: calc(var(--radius) * 2);
+            border-radius: 6px;
             padding: 2rem;
             max-width: 400px;
             width: 90%;
             text-align: center;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            animation: slideIn 0.3s ease-out;
             border: 1px solid var(--border-color);
         }
 
@@ -408,7 +385,6 @@ HTML='''<!DOCTYPE html>
             font-family: var(--font-mono);
             color: white;
             margin: 0 auto 1rem;
-            box-shadow: 0 4px 20px rgba(74, 158, 255, 0.4);
         }
 
         .caller-id {
@@ -435,12 +411,12 @@ HTML='''<!DOCTYPE html>
         .modal-btn {
             padding: 0.75rem 1.5rem;
             border: none;
-            border-radius: var(--radius);
+            border-radius: 4px;
             font-size: 0.9rem;
             font-weight: 600;
             font-family: var(--font-mono);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background-color 0.2s;
             min-width: 100px;
         }
 
@@ -451,7 +427,6 @@ HTML='''<!DOCTYPE html>
 
         .accept-btn:hover {
             background: #00b574;
-            transform: translateY(-1px);
         }
 
         .decline-btn {
@@ -461,10 +436,8 @@ HTML='''<!DOCTYPE html>
 
         .decline-btn:hover {
             background: #495057;
-            transform: translateY(-1px);
         }
 
-        /* Call Overlay */
         .call-overlay {
             position: fixed;
             top: 0;
@@ -500,23 +473,21 @@ HTML='''<!DOCTYPE html>
         }
 
         .encryption-status {
-            background: rgba(255, 255, 255, 0.15);
+            background: var(--text-secondary);
             padding: 0.5rem 1rem;
-            border-radius: calc(var(--radius) * 2);
+            border-radius: 4px;
             font-size: 0.8rem;
             font-family: var(--font-mono);
             margin-bottom: 1rem;
-            border: 1px solid rgba(255, 255, 255, 0.2);
         }
 
         .audio-bar {
             width: min(300px, 80vw);
             height: 20px;
-            background: rgba(255, 255, 255, 0.2);
+            background: var(--secondary-color);
             border-radius: 10px;
             margin: 1.5rem 0;
             overflow: hidden;
-            border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
         .audio-fill {
@@ -535,27 +506,25 @@ HTML='''<!DOCTYPE html>
         }
 
         .ctrl-btn {
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: var(--secondary-color);
+            border: 1px solid var(--border-color);
             color: white;
             padding: 0.75rem 1rem;
-            border-radius: var(--radius);
+            border-radius: 4px;
             font-size: 0.9rem;
             font-family: var(--font-mono);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background-color 0.2s;
             min-width: 120px;
             text-align: center;
         }
 
         .ctrl-btn:hover {
-            background: rgba(255, 255, 255, 0.2);
-            transform: translateY(-1px);
+            background: #373e47;
         }
 
         .ctrl-btn.active {
-            background: rgba(255, 255, 255, 0.9);
-            color: var(--primary-color);
+            background: var(--accent-color);
         }
 
         .end-btn {
@@ -567,38 +536,26 @@ HTML='''<!DOCTYPE html>
             background: #e03e52;
         }
 
-        /* Indicators */
-        .earpiece-indicator {
+        .earpiece-indicator, .wake-lock-indicator {
             position: fixed;
-            bottom: 70px;
             left: 20px;
-            background: rgba(0, 208, 132, 0.2);
-            color: var(--success-color);
+            background: var(--warning-color);
+            color: white;
             padding: 0.3rem 0.6rem;
-            border-radius: calc(var(--radius) * 2);
+            border-radius: 4px;
             font-size: 0.7rem;
             font-family: var(--font-mono);
             z-index: 1000;
-            box-shadow: 0 2px 10px var(--shadow);
-            border: 1px solid var(--success-color);
+        }
+
+        .earpiece-indicator {
+            bottom: 70px;
         }
 
         .wake-lock-indicator {
-            position: fixed;
             bottom: 120px;
-            left: 20px;
-            background: rgba(255, 165, 2, 0.2);
-            color: var(--warning-color);
-            padding: 0.3rem 0.6rem;
-            border-radius: calc(var(--radius) * 2);
-            font-size: 0.7rem;
-            font-family: var(--font-mono);
-            z-index: 1000;
-            box-shadow: 0 2px 10px var(--shadow);
-            border: 1px solid var(--warning-color);
         }
 
-        /* No Users Message */
         .no-users {
             text-align: center;
             color: var(--text-secondary);
@@ -622,164 +579,48 @@ HTML='''<!DOCTYPE html>
             color: var(--text-secondary);
         }
 
-        .welcome-message code {
+        .random-groups {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+        }
+
+        .random-group-link {
             background: var(--secondary-color);
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-family: var(--font-mono);
             color: var(--accent-color);
-            word-break: break-all;
+            padding: 0.75rem;
+            border-radius: 4px;
+            text-decoration: none;
+            font-family: var(--font-mono);
+            font-weight: 600;
+            border: 1px solid var(--border-color);
+            transition: background-color 0.2s ease;
         }
 
-        /* Animations */
-        .pulse {
-            animation: pulse 2s infinite;
+        .random-group-link:hover {
+            background: #373e47;
+            color: var(--accent-color);
         }
 
-        .calling-animation {
-            position: absolute;
-            top: -5px;
-            right: -5px;
-            width: 16px;
-            height: 16px;
-            background: var(--success-color);
-            border-radius: 50%;
-            animation: ping 1s infinite;
-        }
-
-        /* Responsive Design */
-        @media (max-width: 768px) {
-            :root {
-                --spacing: 0.75rem;
-            }
-
-            .container {
-                padding: 0.5rem;
-            }
-
-            .card {
-                margin: 0.75rem 0;
-            }
-
-            .modal-content {
-                padding: 1.5rem;
-                margin: 1rem;
-            }
-
-            .modal-actions {
-                flex-direction: column;
-            }
-
-            .modal-btn {
-                width: 100%;
-            }
-
-            .controls {
-                gap: 0.5rem;
-            }
-
-            .ctrl-btn {
-                padding: 0.6rem 0.8rem;
-                font-size: 0.8rem;
-                min-width: 100px;
-            }
-
-            .status {
-                position: static;
-                width: 100%;
-                margin: 0;
-                border-radius: 0;
-                text-align: center;
-            }
-
-            .security-indicator {
-                bottom: 10px;
-                left: 10px;
-                font-size: 0.7rem;
-                padding: 0.3rem 0.6rem;
-            }
-
-            .earpiece-indicator {
-                bottom: 60px;
-                left: 10px;
-                font-size: 0.65rem;
-            }
-
-            .wake-lock-indicator {
-                bottom: 110px;
-                left: 10px;
-                font-size: 0.65rem;
-            }
-
-            .user {
-                flex-direction: column;
-                text-align: center;
-                gap: 0.5rem;
-            }
-
-            .btn-small {
-                width: 100%;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .card-header {
-                flex-direction: column;
-                gap: 0.5rem;
-                text-align: center;
-            }
-
-            .audio-bar {
-                width: 90vw;
-            }
-
-            .ctrl-btn {
-                min-width: 90px;
-                padding: 0.5rem;
-            }
-        }
-
-        /* Keyframes */
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        @keyframes slideIn {
-            from {
-                transform: translateY(-30px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-        }
-
-        @keyframes ping {
-            0% {
-                transform: scale(1);
-                opacity: 1;
-            }
-            100% {
-                transform: scale(2);
-                opacity: 0;
-            }
-        }
-
-        /* Utility Classes */
+        .hidden { display: none !important; }
         .text-center { text-align: center; }
         .text-muted { color: var(--text-secondary); }
-        .mb-0 { margin-bottom: 0; }
-        .mt-1 { margin-top: 0.5rem; }
-        .hidden { display: none !important; }
 
-        /* Focus styles for accessibility */
+        @media (max-width: 768px) {
+            .container { padding: 0.5rem; }
+            .card { margin: 0.75rem 0; }
+            .modal-content { padding: 1.5rem; margin: 1rem; }
+            .modal-actions { flex-direction: column; }
+            .modal-btn { width: 100%; }
+            .controls { gap: 0.5rem; }
+            .ctrl-btn { padding: 0.6rem 0.8rem; font-size: 0.8rem; min-width: 100px; }
+            .status { position: static; width: 100%; margin: 0; border-radius: 0; text-align: center; }
+            .user { flex-direction: column; text-align: center; gap: 0.5rem; }
+            .btn-small { width: 100%; }
+            .random-groups { grid-template-columns: 1fr; }
+        }
+
         *:focus-visible {
             outline: 2px solid var(--accent-color);
             outline-offset: 2px;
@@ -797,9 +638,9 @@ HTML='''<!DOCTYPE html>
     </div>
 
     <div id="status" class="status">🔴 Connecting...</div>
-    <div id="securityIndicator" class="security-indicator hidden">🔒 Audio Encrypted</div>
+    <div id="securityIndicator" class="security-indicator hidden">🔐 Audio Encrypted</div>
     <div id="earpieceIndicator" class="earpiece-indicator hidden">📱 Private Earpiece (20%)</div>
-    <div id="wakeLockIndicator" class="wake-lock-indicator hidden">🔓 Screen Wake Active</div>
+    <div id="wakeLockIndicator" class="wake-lock-indicator hidden">🔒 Screen Wake Active</div>
 
     <div class="container">
         <div class="card">
@@ -838,15 +679,15 @@ HTML='''<!DOCTYPE html>
             <div class="card-header">🌐 Welcome to xsukax Voice</div>
             <div class="card-body">
                 <div class="welcome-message">
-                    <h2>🏷️ Create or Join a Group</h2>
-                    <p><strong>Add a group name to the URL to create/join a group:</strong></p>
-                    <p><code>{{ request.url_root }}groupname</code></p>
-                    <p class="text-muted">Replace "groupname" with any name to create your private encrypted group</p>
-                    <br>
-                    <p><strong>Examples:</strong></p>
-                    <p><code>{{ request.url_root }}work</code></p>
-                    <p><code>{{ request.url_root }}friends</code></p>
-                    <p><code>{{ request.url_root }}family</code></p>
+                    <h2>🏷️ Join Random Groups</h2>
+                    <p class="text-muted">Click any group below to join or create your own by changing the URL</p>
+                    
+                    <div class="random-groups">
+                        <a href="{{ request.url_root }}{{ random_group1 }}" class="random-group-link">{{ random_group1 }}</a>
+                        <a href="{{ request.url_root }}{{ random_group2 }}" class="random-group-link">{{ random_group2 }}</a>
+                        <a href="{{ request.url_root }}{{ random_group3 }}" class="random-group-link">{{ random_group3 }}</a>
+                        <a href="{{ request.url_root }}{{ random_group4 }}" class="random-group-link">{{ random_group4 }}</a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -857,10 +698,9 @@ HTML='''<!DOCTYPE html>
     <div id="callModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <div class="caller-avatar pulse" id="callerAvatar"></div>
-                <div class="calling-animation"></div>
+                <div class="caller-avatar" id="callerAvatar"></div>
                 <div class="caller-id" id="callerIdText"></div>
-                <div class="call-text">🔒 Private earpiece call incoming</div>
+                <div class="call-text">🔐 Private earpiece call incoming</div>
             </div>
             <div class="modal-actions">
                 <button class="modal-btn accept-btn" onclick="acceptCall()">✅ Accept</button>
@@ -874,7 +714,7 @@ HTML='''<!DOCTYPE html>
         <div class="call-info">
             <div class="participants" id="callWith"></div>
             <div class="call-status" id="callStatus">Connecting...</div>
-            <div class="encryption-status" id="encryptionStatus">🔒 Establishing end-to-end encryption...</div>
+            <div class="encryption-status" id="encryptionStatus">🔐 Establishing end-to-end encryption...</div>
         </div>
         <div class="audio-bar">
             <div class="audio-fill" id="audioLevel"></div>
@@ -909,39 +749,28 @@ HTML='''<!DOCTYPE html>
             isIOS = /iPad|iPhone|iPod/.test(userAgent);
             isAndroid = /Android/.test(userAgent);
             isMobile = isIOS || isAndroid;
-            
-            console.log('Device detected:', { isIOS, isAndroid, isMobile, userAgent });
         }
 
         async function setupScreenWakeProtection() {
-            console.log('Setting up enhanced screen wake protection...');
-
-            // Enhanced wake lock support
             if ('wakeLock' in navigator) {
-                console.log('Wake Lock API supported - will aggressively maintain wake');
+                console.log('Wake Lock API supported');
             }
 
-            // Page visibility and focus management
             document.addEventListener('visibilitychange', handleVisibilityChange);
             window.addEventListener('beforeunload', handleBeforeUnload);
             window.addEventListener('blur', handleWindowBlur);
             window.addEventListener('focus', handleWindowFocus);
             
-            // Mobile-specific wake management
             if (isMobile) {
                 setupMobileWakeManagement();
             }
 
-            // User interaction wake maintenance
             document.addEventListener('touchstart', maintainScreenWake, { passive: true });
             document.addEventListener('click', maintainScreenWake, { passive: true });
-
-            console.log('Enhanced screen wake protection initialized');
         }
 
         async function requestWakeLock(retry = 0) {
             if (!('wakeLock' in navigator)) {
-                console.log('Wake Lock not supported, using fallback methods');
                 fallbackScreenWake();
                 return;
             }
@@ -953,22 +782,19 @@ HTML='''<!DOCTYPE html>
                 }
 
                 wakeLock = await navigator.wakeLock.request('screen');
-                console.log('Wake lock acquired successfully');
-                
                 document.getElementById('wakeLockIndicator').classList.remove('hidden');
+                
                 if (retry === 0) {
-                    showAlert('🔓 Screen will stay awake during call');
+                    showAlert('🔒 Screen will stay awake during call');
                 }
 
                 wakeLock.addEventListener('release', () => {
-                    console.log('Wake lock released - attempting reacquisition');
                     if (inCall && retry < 10) {
                         setTimeout(() => requestWakeLock(retry + 1), Math.min(2000 * Math.pow(2, retry), 30000));
                     }
                 });
 
             } catch (error) {
-                console.log(`Wake lock failed (attempt ${retry + 1}):`, error);
                 if (retry < 5) {
                     setTimeout(() => requestWakeLock(retry + 1), 3000);
                 } else {
@@ -978,8 +804,6 @@ HTML='''<!DOCTYPE html>
         }
 
         function fallbackScreenWake() {
-            console.log('Using fallback screen wake methods');
-            
             createWakeVideo();
             startScreenWakeInterval();
             
@@ -988,7 +812,7 @@ HTML='''<!DOCTYPE html>
             }
 
             document.getElementById('wakeLockIndicator').classList.remove('hidden');
-            document.getElementById('wakeLockIndicator').textContent = '🔓 Screen Wake (Fallback)';
+            document.getElementById('wakeLockIndicator').textContent = '🔒 Screen Wake (Fallback)';
         }
 
         function createWakeVideo() {
@@ -1020,7 +844,6 @@ HTML='''<!DOCTYPE html>
             video.play().then(() => {
                 document.body.appendChild(video);
                 animate();
-                console.log('Wake video created and playing');
             }).catch(e => console.log('Wake video failed:', e));
             
             video._cleanup = () => {
@@ -1039,9 +862,7 @@ HTML='''<!DOCTYPE html>
             
             screenWakeInterval = setInterval(() => {
                 if (inCall) {
-                    // Simulate user activity
                     document.dispatchEvent(new Event('touchstart'));
-                    
                     requestAnimationFrame(() => {
                         if (inCall && Date.now) {
                             window._wakeTimestamp = Date.now();
@@ -1067,7 +888,6 @@ HTML='''<!DOCTYPE html>
                 oscillator.start();
                 
                 micKeepAliveNodes.push(oscillator);
-                console.log('Audio wake maintenance active');
                 
             } catch (e) {
                 console.log('Audio wake maintenance failed:', e);
@@ -1108,17 +928,14 @@ HTML='''<!DOCTYPE html>
                     });
 
                     navigator.mediaSession.setActionHandler('pause', () => {
-                        console.log('Media session pause - maintaining call');
                         if (inCall) maintainBackgroundAudio();
                     });
 
                     navigator.mediaSession.setActionHandler('play', () => {
-                        console.log('Media session play - resuming call');
                         if (inCall && muted) toggleMute();
                     });
 
                     navigator.mediaSession.setActionHandler('hangup', () => {
-                        console.log('Media session hangup');
                         if (inCall) endCall();
                     });
                 }
@@ -1129,7 +946,6 @@ HTML='''<!DOCTYPE html>
             if (wakeLock) {
                 wakeLock.release();
                 wakeLock = null;
-                console.log('Wake lock released');
             }
             
             if (screenWakeInterval) {
@@ -1151,7 +967,6 @@ HTML='''<!DOCTYPE html>
 
         function handleVisibilityChange() {
             if (document.hidden && inCall) {
-                console.log('Page went to background during call - aggressive maintenance');
                 maintainBackgroundAudio();
                 setTimeout(() => {
                     if (!document.hidden && inCall) {
@@ -1159,7 +974,6 @@ HTML='''<!DOCTYPE html>
                     }
                 }, 1000);
             } else if (!document.hidden && inCall) {
-                console.log('Page came back to foreground during call');
                 resumeForegroundAudio();
                 requestWakeLock();
             }
@@ -1167,7 +981,6 @@ HTML='''<!DOCTYPE html>
 
         function handleWindowBlur() {
             if (inCall) {
-                console.log('Window lost focus during call');
                 maintainBackgroundAudio();
                 setTimeout(() => requestWakeLock(), 2000);
             }
@@ -1175,7 +988,6 @@ HTML='''<!DOCTYPE html>
 
         function handleWindowFocus() {
             if (inCall) {
-                console.log('Window gained focus during call');
                 resumeForegroundAudio();
                 requestWakeLock();
             }
@@ -1196,7 +1008,6 @@ HTML='''<!DOCTYPE html>
                 try {
                     if (audioCtx.state !== 'running') {
                         await audioCtx.resume();
-                        console.log('Audio context resumed for background');
                     }
                 } catch (e) {
                     console.log('Could not resume audio context:', e);
@@ -1222,8 +1033,6 @@ HTML='''<!DOCTYPE html>
                     backgroundAudioNodes.push(oscillator);
                 }
                 
-                console.log('Background audio maintenance active with redundancy');
-                
             } catch (e) {
                 console.log('Could not maintain background audio:', e);
             }
@@ -1238,9 +1047,7 @@ HTML='''<!DOCTYPE html>
             backgroundAudioNodes = [];
 
             if (audioCtx && audioCtx.state !== 'running') {
-                audioCtx.resume().then(() => {
-                    console.log('Audio context resumed in foreground');
-                }).catch(e => console.log('Could not resume audio context:', e));
+                audioCtx.resume().catch(e => console.log('Could not resume audio context:', e));
             }
 
             stopKeepAlive();
@@ -1470,7 +1277,7 @@ HTML='''<!DOCTYPE html>
             
             await requestWakeLock();
             
-            document.getElementById('callStatus').textContent = '🔒 Establishing encryption...';
+            document.getElementById('callStatus').textContent = '🔐 Establishing encryption...';
             const publicKeyBuffer = await generateKeyPair();
             if (publicKeyBuffer) {
                 socket.emit('key_exchange', {
@@ -1491,7 +1298,7 @@ HTML='''<!DOCTYPE html>
                     document.getElementById('callStatus').textContent = '✅ Secure call - screen stays awake!';
                     document.getElementById('securityIndicator').classList.remove('hidden');
                     document.getElementById('earpieceIndicator').classList.remove('hidden');
-                    showAlert('🔒 Protected call established');
+                    showAlert('🔐 Protected call established');
                 }
             } catch (e) {
                 console.error('Key exchange failed:', e);
@@ -1529,8 +1336,6 @@ HTML='''<!DOCTYPE html>
                 localStream = await navigator.mediaDevices.getUserMedia({
                     audio: audioConstraints
                 });
-
-                console.log('Audio stream created with wake-proof constraints');
 
                 const audioOptions = {
                     sampleRate: 16000,
@@ -1572,8 +1377,6 @@ HTML='''<!DOCTYPE html>
                 processor.connect(audioCtx.destination);
 
                 maintainAudioWake();
-
-                console.log('Wake-proof earpiece audio setup completed');
 
             } catch (e) {
                 console.error('Wake-proof audio setup failed:', e);
@@ -1674,8 +1477,6 @@ HTML='''<!DOCTYPE html>
             const muteBtn = document.getElementById('muteBtn');
             muteBtn.textContent = '🎤 Mic';
             muteBtn.classList.remove('active');
-
-            console.log('Call ended, all wake protection released');
         }
 
         function refresh() {
@@ -1714,17 +1515,13 @@ HTML='''<!DOCTYPE html>
             div.style.cssText = `
                 position: fixed; top: 90px; right: 20px; 
                 background: #21262d; color: #f0f6fc; 
-                padding: 0.75rem 1rem; border-radius: var(--radius); 
+                padding: 0.75rem 1rem; border-radius: 4px; 
                 z-index: 3500; max-width: 300px; font-family: var(--font-mono);
-                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); font-size: 0.85rem;
-                border: 1px solid #30363d;
+                font-size: 0.85rem; border: 1px solid #30363d;
             `;
             div.textContent = msg;
             document.body.appendChild(div);
-            setTimeout(() => {
-                div.style.animation = 'fadeIn 0.3s ease-out reverse';
-                setTimeout(() => div.remove(), 300);
-            }, 4000);
+            setTimeout(() => div.remove(), 4000);
         }
 
         let ringtoneInterval;
@@ -1764,14 +1561,24 @@ HTML='''<!DOCTYPE html>
 def home():
     if 'user_id' not in session:
         session['user_id'] = gen_id()
-    return render_template_string(HTML, user_id=session['user_id'], group_name=None)
+    
+    # Generate random group names for homepage
+    random_groups = [gen_random_group() for _ in range(4)]
+    
+    return render_template_string(HTML, 
+        user_id=session['user_id'], 
+        group_name=None,
+        random_group1=random_groups[0],
+        random_group2=random_groups[1], 
+        random_group3=random_groups[2],
+        random_group4=random_groups[3]
+    )
 
 @app.route('/<group_name>')
 def group_page(group_name):
     if 'user_id' not in session:
         session['user_id'] = gen_id()
     
-    # Sanitize and create group
     clean_group_name = get_or_create_group(group_name)
     if not clean_group_name:
         return redirect('/')
@@ -1799,14 +1606,12 @@ def api_group_users(group_name):
     
     return jsonify({'users': [], 'group': clean_group_name})
 
-# Group-aware WebSocket handlers
+# WebSocket event handlers
 @socketio.on('connect')
 def on_connect():
     if 'user_id' not in session:
         return False
-    
-    uid = session['user_id']
-    logger.info(f'User {uid} connected')
+    logger.info(f'User {session["user_id"]} connected')
 
 @socketio.on('join_group')
 def on_join_group(data):
@@ -1819,18 +1624,11 @@ def on_join_group(data):
     if not group_name:
         return
     
-    # Add user to group
     groups[group_name]['users'][uid] = {'sid': request.sid, 'status': 'available'}
-    
-    # Join socket room for group
     join_room(f'group_{group_name}')
-    
-    # Store group in session
     session['group_name'] = group_name
     
-    # Notify other users in the group
     emit('user_online', {'user_id': uid}, room=f'group_{group_name}', include_self=False)
-    
     logger.info(f'User {uid} joined group {group_name}')
 
 @socketio.on('disconnect')
@@ -1840,22 +1638,16 @@ def on_disconnect():
     
     uid = session['user_id']
     
-    # Remove user from all groups
     for group_name, group_data in groups.items():
         if uid in group_data['users']:
             del group_data['users'][uid]
             
-            # End any calls involving this user
             for call_id, call in list(group_data['calls'].items()):
                 if call['caller'] == uid or call['callee'] == uid:
                     del group_data['calls'][call_id]
             
-            # Notify other users in the group
             emit('user_offline', {'user_id': uid}, room=f'group_{group_name}')
-            
-            # Leave socket room
             leave_room(f'group_{group_name}')
-            
             logger.info(f'User {uid} left group {group_name}')
             break
 
@@ -2007,14 +1799,24 @@ def on_ping(data):
         emit('pong', {'timestamp': data.get('timestamp', 0)})
 
 if __name__ == '__main__':
-    port = 22000
-    logger.info(f'Starting xsukax E2E encrypted voice server with groups on port {port} with SSL')
-    socketio.run(app, host='0.0.0.0', port=port, debug=False,
+    logger.info(f'Starting xsukax E2E encrypted voice server on port {PORT} with SSL')
+    socketio.run(app, host='0.0.0.0', port=PORT, debug=False,
                 certfile='/opt/voice-server/server.crt',
                 keyfile='/opt/voice-server/server.key')
 EOF
 
-# Create service
+# Generate SSL certificates
+log "Generating SSL certificates..."
+openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
+    -keyout "$INSTALL_DIR/server.key" \
+    -out "$INSTALL_DIR/server.crt" \
+    -subj "/CN=localhost" 2>/dev/null
+
+chmod 600 "$INSTALL_DIR/server.key"
+chmod 644 "$INSTALL_DIR/server.crt"
+
+# Create systemd service
+log "Creating systemd service..."
 cat > /etc/systemd/system/voice-server.service << EOF
 [Unit]
 Description=xsukax E2E Encrypted Voice Call Server
@@ -2035,86 +1837,57 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# Generate SSL certificates for localhost origin security
-log "Generating SSL certificates for origin security..."
-openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
-    -keyout "$INSTALL_DIR/server.key" \
-    -out "$INSTALL_DIR/server.crt" \
-    -subj "/CN=localhost"
-
-# Set proper SSL permissions
-chmod 600 "$INSTALL_DIR/server.key"
-chmod 644 "$INSTALL_DIR/server.crt"
-
-log "SSL certificates generated - Flask will run on HTTPS"
-log "Note: Update your Cloudflare tunnel to use: https://localhost:22000"
-
 # Set permissions
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
-chmod +x app/server.py
+chmod +x "$INSTALL_DIR/app/server.py"
 
-# Firewall - Allow HTTPS traffic
+# Configure firewall
+log "Configuring firewall..."
 if command -v ufw >/dev/null; then
     ufw --force enable >/dev/null 2>&1
     ufw allow ssh >/dev/null 2>&1
-    ufw allow $PORT/tcp >/dev/null 2>&1  # HTTPS on port 22000
-    ufw allow 443/tcp >/dev/null 2>&1    # Standard HTTPS port if needed
+    ufw allow $PORT/tcp >/dev/null 2>&1
+    ufw allow 443/tcp >/dev/null 2>&1
 else
     systemctl enable firewalld >/dev/null 2>&1
-    firewall-cmd --permanent --add-port=$PORT/tcp >/dev/null 2>&1  # HTTPS
-    firewall-cmd --permanent --add-port=443/tcp >/dev/ull 2>&1    # Standard HTTPS
+    firewall-cmd --permanent --add-port=$PORT/tcp >/dev/null 2>&1
+    firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1
     firewall-cmd --reload >/dev/null 2>&1
 fi
 
-# Start service
+# Start and enable service
+log "Starting service..."
 systemctl daemon-reload
 systemctl enable voice-server
 systemctl start voice-server
 
+# Display results
 echo ""
 echo "🎉 XSUKAX E2E ENCRYPTED VOICE SERVER"
-echo "====================================="
+echo "===================================="
 echo "🔌 Port: $PORT (HTTPS/WSS)"
 echo "🆔 Random 6-char IDs"
-echo "🔒 True End-to-End Encryption"
+echo "🔐 True End-to-End Encryption"
 echo "📱 EARPIECE-ONLY: 20% Volume"
-echo "🔓 AGGRESSIVE SCREEN WAKE: Mic Never Stops!"
+echo "🔒 AGGRESSIVE SCREEN WAKE"
 echo "🏷️ GROUPS: URL-based Auto-Creation"
-echo "📋 GROUP INFO: Click to Copy URL + ID"
+echo "📋 GROUP INFO: Click to Copy"
 echo "🛡️ SSL/TLS Origin Security"
-echo ""
-echo "📋 SHARING WORKFLOW:"
-echo "  1. Visit: voice.example.com/mygroup"
-echo "  2. Click 'Group Info' section"
-echo "  3. Copies: 'Group URL: ... + My ID: ...'"
-echo "  4. Paste in WhatsApp/Telegram"
-echo "  5. Friends join and call via user list"
-echo ""
-echo "🔒 SECURITY LAYERS:"
-echo "  • Browser ↔ Cloudflare: HTTPS/WSS ✅"
-echo "  • Cloudflare ↔ Origin: HTTPS/WSS ✅"
-echo "  • Audio Encryption: E2E AES-GCM ✅"
-echo "  • Key Exchange: ECDH P-256 ✅"
-echo "  • Perfect Forward Secrecy ✅"
-echo "  • Group Isolation ✅"
-echo "  • Privacy: Earpiece-only audio (20% volume) ✅"
 echo ""
 echo "🔧 Commands:"
 echo "  Status: systemctl status voice-server"
 echo "  Logs:   journalctl -u voice-server -f"
-echo "  SSL Test: openssl s_client -connect localhost:22000"
 echo ""
 
-# Final status
 if systemctl is-active --quiet voice-server; then
     echo "✅ XSUKAX E2E ENCRYPTED VOICE SERVER RUNNING!"
     echo ""
     echo "🔧 NEXT STEPS:"
     echo "  1. Update Cloudflare tunnel: https://localhost:22000"
     echo "  2. Set SSL mode to 'Full (Strict)'"
-	echo "  3. Enable 'Always Use HTTPS'"
-	echo "  4. Additional application settings > TLS > No TLS Verify"
-	echo "  5. Additional application settings > HTTP Settings > Disable Chunked Encoding"
+    echo "  3. Enable 'Always Use HTTPS'"
+    echo "  4. Additional settings > TLS > No TLS Verify"
+    echo "  5. Additional settings > HTTP > Disable Chunked Encoding"
 else
     echo "❌ Service failed to start"
     echo "Check: journalctl -u voice-server -f"
